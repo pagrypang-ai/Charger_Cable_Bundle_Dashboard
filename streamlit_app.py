@@ -79,9 +79,9 @@ VALUE_LOGIC = {
     "Cable": {
         "axis": "Product Value (Cable)",
         "text": (
-            "Value logic: Cables are ranked mainly by max supported charging power. "
-            "Cable length is a secondary value factor after power; within similar tiers, "
-            "connector type and cable technologies such as certification or braided build increase value."
+            "Value logic: Cables are ranked mainly by cable length. "
+            "Within the same length tier, higher supported charging power increases value; "
+            "connector type and cable technologies such as certification or braided build add extra value."
         ),
     },
     "Charger + Cable Bundle": {
@@ -315,13 +315,26 @@ def estimate_bundle_set_count(row) -> int:
 
 def compute_product_value(row) -> float | None:
     power = row.get("Max Output Power Num")
-    if pd.isna(power) or power is None:
-        return None
-
     product_type = row.get("Product Type Group", "")
     ports = parse_port_counts(row.get("Connect Type/Ports", ""))
     tech = row.get("Charging Tech", "")
     fast = 3 if row.get("Fast Charging Group") == "Yes" else 0
+
+    if product_type == "Cable":
+        length = row.get("Cable Length Num")
+        if (pd.isna(length) or length is None) and (pd.isna(power) or power is None):
+            return None
+        length_base = 0 if pd.isna(length) or length is None else float(length) * 100
+        power_score = 0 if pd.isna(power) or power is None else float(power)
+        connector_score = 4 if _contains_any(row.get("Connect Type/Ports", ""), ["usb-c to usb-c"]) else 2
+        tech_score = 0
+        tech_score += 3 if _contains_any(tech, ["usb-if", "thunderbolt", "mfi"]) else 0
+        tech_score += 2 if _contains_any(tech, ["braided", "usb 3", "usb 4"]) else 0
+        return length_base + power_score + connector_score + tech_score + fast
+
+    if pd.isna(power) or power is None:
+        return None
+
     base = float(power) * 10
 
     if product_type == "Charger":
@@ -331,15 +344,6 @@ def compute_product_value(row) -> float | None:
         tech_score += 2 if _contains_any(tech, ["foldable", "qc"]) else 0
         port_score = ports["total"] * 2 + ports["usb_c"] * 2
         return base + port_score + tech_score + fast
-
-    if product_type == "Cable":
-        length = row.get("Cable Length Num")
-        length_score = 0 if pd.isna(length) or length is None else min(float(length), 10) * 0.8
-        connector_score = 4 if _contains_any(row.get("Connect Type/Ports", ""), ["usb-c to usb-c"]) else 2
-        tech_score = 0
-        tech_score += 3 if _contains_any(tech, ["usb-if", "thunderbolt", "mfi"]) else 0
-        tech_score += 2 if _contains_any(tech, ["braided", "usb 3", "usb 4"]) else 0
-        return base + length_score + connector_score + tech_score + fast
 
     if product_type == "Charger + Cable Bundle":
         set_count = row.get("Bundle Set Count", 1)
@@ -518,7 +522,17 @@ def _sorted_options(series):
 
 def _power_options(df):
     powers = sorted(df["Max Output Power Num"].dropna().unique())
-    return [f"{int(power)}W" for power in powers]
+    options = [f"{int(power)}W" for power in powers]
+    if df["Max Output Power Num"].isna().any():
+        options.append("N/A")
+    return options
+
+
+def format_power_range(df):
+    values = df["Max Output Power Num"].dropna()
+    if values.empty:
+        return "N/A"
+    return f"{int(values.min())}-{int(values.max())}W"
 
 
 def _lazy_streamlit():
@@ -586,7 +600,7 @@ def render_value_matrix(df, date_cols):
     col3.metric("Median Price", "N/A" if plot_df.empty else f"${plot_df['Price Num'].median():,.2f}")
     col4.metric(
         "Max Output Power Range",
-        "N/A" if plot_df.empty else f"{int(plot_df['Max Output Power Num'].min())}-{int(plot_df['Max Output Power Num'].max())}W",
+        "N/A" if plot_df.empty else format_power_range(plot_df),
     )
 
     chart_columns = list(dict.fromkeys(["Price Num", "Product Value", "Image Source", "Link", "Brand Group", *DISPLAY_FIELDS]))
